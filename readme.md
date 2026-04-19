@@ -62,23 +62,28 @@ This project simulates a production-like observability pipeline entirely on a lo
 
 ```
 .
-├── docker-compose.yml            # Spins up LocalStack + emitter + agent
+├── docker-compose.yml            # Spins up LocalStack + emitter + agent + watcher
 ├── .env.example                  # Environment variable template
+├── .gitignore
 ├── config.yaml                   # Tunable parameters (poll interval, batch size)
 ├── localstack/
-│   └── init-aws.sh               # Bootstrap CloudWatch log group + SNS topic
+│   └── init-aws.sh               # Bootstrap CW log group, SNS topic, SQS queue + subscription
 ├── emitter/
 │   ├── Dockerfile
 │   ├── requirements.txt
 │   ├── emitter.py                # Synthetic log generator
-│   └── log_templates.py          # Structured log event definitions
+│   └── log_templates.py          # Structured log event definitions + anomaly burst scenarios
 ├── agent/
 │   ├── Dockerfile
 │   ├── requirements.txt
 │   ├── agent.py                  # Main polling + analysis loop
-│   ├── cloudwatch_reader.py      # CW Logs pagination wrapper
-│   ├── claude_client.py          # Claude API interaction (prompt + parse)
+│   ├── cloudwatch_reader.py      # CW Logs nextForwardToken cursor wrapper
+│   ├── claude_client.py          # Claude API interaction (taxonomy prompt + caching)
 │   └── sns_publisher.py          # SNS publish wrapper
+├── watcher/
+│   ├── Dockerfile
+│   ├── requirements.txt
+│   └── watcher.py                # SQS long-poll consumer, color-coded terminal output
 └── readme.md
 ```
 
@@ -201,12 +206,39 @@ This prompt is **cached** via the Anthropic prompt caching feature — because t
 
 Publishes findings to a LocalStack SNS topic. In a real deployment this topic could fan out to PagerDuty, Slack, email, or an incident management system. Locally, published messages are readable via the LocalStack web UI or CLI.
 
-### 5. LocalStack Init (`localstack/init-aws.sh`)
+### 5. Watcher (`watcher/watcher.py`)
+
+A lightweight SQS consumer that runs as a fourth container and prints every anomaly finding to stdout in color-coded format as it arrives — no extra tooling needed to see results.
+
+```
+──────────────────────────────────────────────────────────────
+  ANOMALY DETECTED
+──────────────────────────────────────────────────────────────
+  Type:     cascading_timeout
+  Severity: HIGH
+  Service:  payment-service
+
+  Root Cause:
+    Three consecutive DB timeouts (4800–5200ms) suggest the
+    connection pool is exhausted.
+
+  Action:
+    Check DB pool limits and active connections. Consider
+    shedding load until DB recovers.
+──────────────────────────────────────────────────────────────
+```
+
+Color coding: blue = low, yellow = medium, red = high, magenta = critical.
+
+The watcher uses **SQS long-polling** (`WaitTimeSeconds=10`) so it reacts within seconds of a finding being published, with near-zero CPU idle cost.
+
+### 6. LocalStack Init (`localstack/init-aws.sh`)
 
 Shell script executed at LocalStack startup that pre-creates:
 - CloudWatch log group: `/microservice/payment-service`
 - CloudWatch log stream: `application`
 - SNS topic: `anomaly-findings`
+- SQS queue: `anomaly-findings-watcher` (subscribed to the SNS topic)
 
 ---
 
@@ -282,33 +314,34 @@ aws --endpoint-url=http://localhost:4566 sns list-subscriptions
 ## Implementation Phases
 
 ### Phase 1 — Infrastructure Scaffold
-- [ ] `docker-compose.yml` with LocalStack, emitter, agent services
-- [ ] `localstack/init-aws.sh` creates log group, stream, SNS topic
-- [ ] `.env.example` with all required variables
+- [x] `docker-compose.yml` with LocalStack, emitter, agent, watcher services
+- [x] `localstack/init-aws.sh` creates log group, stream, SNS topic, SQS queue + subscription
+- [x] `.env.example` with all required variables
 
 ### Phase 2 — Log Emitter
-- [ ] `emitter.py` emitting structured JSON logs on a timer
-- [ ] `log_templates.py` with realistic INFO/WARN/ERROR templates
-- [ ] Injected anomaly scenarios: DB timeout burst, latency spike, auth failure storm
+- [x] `emitter.py` emitting structured JSON logs on a timer
+- [x] `log_templates.py` with realistic INFO/WARN/ERROR templates
+- [x] Injected anomaly scenarios: DB timeout burst, latency spike, auth failure storm
 
 ### Phase 3 — CloudWatch Reader
-- [ ] `cloudwatch_reader.py` wrapping `filter_log_events` with cursor/pagination
-- [ ] Checkpoint persistence (file or in-memory) to avoid re-reading
+- [x] `cloudwatch_reader.py` wrapping `get_log_events` with `nextForwardToken` cursor
+- [x] Cursor advances only on non-empty responses to avoid skipping real events
 
 ### Phase 4 — Claude Integration
-- [ ] `claude_client.py` with system prompt, user message builder, JSON response parser
-- [ ] Prompt caching on system prompt
-- [ ] Retry logic with exponential backoff on API errors
+- [x] `claude_client.py` with system prompt, user message builder, JSON response parser
+- [x] Prompt caching on system prompt
+- [x] Retry logic with exponential backoff on API errors
 
 ### Phase 5 — SNS Publisher & Agent Loop
-- [ ] `sns_publisher.py` publishing finding JSON to LocalStack SNS
-- [ ] `agent.py` main loop wiring reader → Claude → publisher
-- [ ] Graceful shutdown on SIGTERM
+- [x] `sns_publisher.py` publishing finding JSON to LocalStack SNS
+- [x] `agent.py` main loop wiring reader → Claude → publisher
+- [x] Graceful shutdown on SIGTERM
 
 ### Phase 6 — Observability & Polish
-- [ ] Structured logging for the agent itself (so you can watch what it's doing)
-- [ ] `config.yaml` for tunable parameters without rebuilding images
-- [ ] README badges, architecture diagram, example output
+- [x] Structured logging for the agent itself
+- [x] `config.yaml` for tunable parameters without rebuilding images
+- [x] SQS watcher service — color-coded terminal output of live findings
+- [x] `.gitignore` protecting `.env` from being committed
 
 ---
 

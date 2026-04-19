@@ -4,7 +4,7 @@ services:
     ports:
       - "4566:4566"
     environment:
-      - SERVICES=logs,sns
+      - SERVICES=logs,sns,sqs
       - DEBUG=0
       - DEFAULT_REGION=${AWS_DEFAULT_REGION:-us-east-1}
     volumes:
@@ -48,6 +48,19 @@ services:
       - LOG_STREAM=${LOG_STREAM:-application}
       - POLL_INTERVAL_SEC=${POLL_INTERVAL_SEC:-15}
       - LOG_BATCH_SIZE=${LOG_BATCH_SIZE:-20}
+    depends_on:
+      localstack:
+        condition: service_healthy
+    restart: on-failure
+
+  watcher:
+    build: ./watcher
+    env_file: .env
+    environment:
+      - AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION:-us-east-1}
+      - AWS_ACCESS_KEY_ID=test
+      - AWS_SECRET_ACCESS_KEY=test
+      - LOCALSTACK_ENDPOINT=http://localstack:4566
     depends_on:
       localstack:
         condition: service_healthy
