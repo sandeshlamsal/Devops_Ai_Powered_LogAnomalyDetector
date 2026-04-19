@@ -126,11 +126,76 @@ The agent maintains a `last_token` cursor so it never re-processes the same logs
 Wraps the Anthropic SDK with a focused prompt and structured output contract:
 
 **Prompt strategy:**
-- System prompt defines the agent as a log analysis expert
+- System prompt defines the agent as a log analysis expert **and embeds the full anomaly taxonomy** (see below)
 - User message provides raw log batch as JSON
 - Requests output in a strict JSON schema: `{ "anomaly_detected": bool, "severity": "low|medium|high|critical", "anomaly_type": str, "affected_service": str, "root_cause_summary": str, "recommended_action": str }`
 
 **Claude model:** `claude-sonnet-4-6` with prompt caching on the system prompt to reduce cost on repeated calls.
+
+---
+
+## Anomaly Taxonomy
+
+The **anomaly taxonomy** is a structured classification system embedded in the Claude system prompt. It gives Claude a fixed vocabulary of anomaly types and severity rules so every finding uses a consistent label — instead of Claude inventing a different description each run.
+
+Without a taxonomy, Claude might call the same problem `"db_timeout"`, `"database_connection_failure"`, or `"upstream_timeout"` across different batches. With the taxonomy defined up front, it always picks from the agreed list and downstream consumers (SNS subscribers, dashboards, alerting rules) can filter on stable values.
+
+### Anomaly Types
+
+| `anomaly_type` value | Description | Typical signals in logs |
+|---|---|---|
+| `error_rate_spike` | Sudden surge in ERROR-level log lines above baseline | ERROR count > 10% of batch, sustained across multiple request IDs |
+| `latency_spike` | Request latency exceeds normal threshold without a hard failure | `latency_ms` > 2000ms on otherwise successful (2xx) responses |
+| `cascading_timeout` | Chain of timeouts propagating across service calls | Sequential timeout messages with escalating retry counts |
+| `connection_pool_exhaustion` | Service unable to acquire DB or HTTP client connections | "pool exhausted", "max connections reached", connection wait > threshold |
+| `auth_failure_storm` | Burst of authentication or authorization rejections | 401/403 status codes from multiple distinct request IDs in short window |
+| `dependency_degradation` | Downstream service returning degraded/partial responses | 206, 207, or custom degraded-mode status codes; increased error rate on one upstream |
+| `resource_exhaustion` | CPU, memory, file descriptor, or disk pressure visible in logs | OOM messages, GC pressure logs, "too many open files" errors |
+| `data_validation_failure` | Unexpected payload shapes or schema mismatches | JSON parse errors, null pointer exceptions, type mismatch messages |
+| `traffic_anomaly` | Request volume deviates significantly from expected pattern | Abnormally high or near-zero log density within the batch window |
+| `repeated_retry_storm` | A single operation retried many times, flooding logs | Same `request_id` or operation appearing > N times with retry indicators |
+
+### Severity Levels
+
+| Level | Meaning | Example condition |
+|---|---|---|
+| `low` | Isolated, self-resolving, no user impact | Single timeout that succeeded on retry |
+| `medium` | Degraded performance or elevated error rate but service still functional | Latency 2–5× normal; error rate 5–15% |
+| `high` | Significant user-facing impact; requires prompt attention | Error rate > 15%; repeated cascading failures |
+| `critical` | Service is down or data integrity is at risk | 100% error rate; OOM crash; connection pool fully exhausted |
+
+### How the Taxonomy Appears in the System Prompt
+
+The system prompt passed to Claude looks like this (simplified):
+
+```
+You are a site reliability engineer specializing in microservice log analysis.
+
+Classify each log batch using ONLY the following anomaly types:
+  error_rate_spike, latency_spike, cascading_timeout,
+  connection_pool_exhaustion, auth_failure_storm,
+  dependency_degradation, resource_exhaustion,
+  data_validation_failure, traffic_anomaly, repeated_retry_storm
+
+Assign severity using these thresholds:
+  low    → isolated, self-resolving
+  medium → degraded but functional
+  high   → significant user impact
+  critical → service down or data at risk
+
+Respond ONLY with valid JSON matching this schema:
+{
+  "anomaly_detected": <bool>,
+  "severity": "<low|medium|high|critical>",
+  "anomaly_type": "<one of the types above>",
+  "affected_service": "<service name from logs>",
+  "root_cause_summary": "<2-3 sentence explanation>",
+  "recommended_action": "<concrete next step for on-call engineer>"
+}
+If no anomaly is detected, set anomaly_detected to false and omit the other fields.
+```
+
+This prompt is **cached** via the Anthropic prompt caching feature — because the system prompt (which contains the full taxonomy) is the same on every call, it is stored server-side for up to 5 minutes, cutting the input token cost by ~90% for the taxonomy portion.
 
 ### 4. SNS Publisher (`agent/sns_publisher.py`)
 
