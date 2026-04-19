@@ -501,6 +501,245 @@ If you are running **Intel Mac** (not Apple Silicon):
 
 ---
 
+## Testing & Verification
+
+This section shows exactly what to run and what to look for to confirm every layer of the pipeline is working.
+
+---
+
+### Step 1 — Start the Stack
+
+```bash
+# With mock Claude (no API key needed — great for testing)
+CLAUDE_MOCK=true docker compose up --build
+
+# With real Claude API
+docker compose up --build
+```
+
+Open **4 terminal tabs** — one per container — to watch each layer independently.
+
+---
+
+### Step 2 — Verify Each Container
+
+#### Terminal 1 — Emitter (log generator)
+
+```bash
+docker compose logs -f emitter
+```
+
+**What you should see** — steady log lines every 2s, and an anomaly burst every 60s:
+
+```
+2026-04-19 17:25:11 [emitter] Starting emitter → /microservice/payment-service / application  interval=2.0s
+2026-04-19 17:26:11 [emitter] Injected anomaly burst: cascading_timeout (8 events)
+2026-04-19 17:27:11 [emitter] Injected anomaly burst: auth_failure_storm (8 events)
+2026-04-19 17:28:12 [emitter] Injected anomaly burst: latency_spike (8 events)
+```
+
+Three burst scenarios cycle in rotation every 60 seconds:
+- `cascading_timeout` — 8 × DB connection timeout errors
+- `auth_failure_storm` — 8 × 401 authentication failures
+- `latency_spike` — 8 × extreme latency warnings (5000-9000ms)
+
+---
+
+#### Terminal 2 — Agent (analysis loop)
+
+```bash
+docker compose logs -f agent
+```
+
+**What you should see** — buffering logs, sending to Claude, publishing findings:
+
+```
+2026-04-19 17:26:21 [agent] WARNING  CLAUDE_MOCK=true — using mock responses, no real API calls will be made
+2026-04-19 17:26:21 [agent] INFO     Agent started — polling /microservice/payment-service/application every 15.0s, batch=20, min_severity=medium
+2026-04-19 17:26:21 [agent] INFO     SNS topic: arn:aws:sns:us-east-1:000000000000:anomaly-findings
+
+2026-04-19 17:26:21 [agent] INFO     Buffered 14 new log lines (total buffered: 24)
+2026-04-19 17:26:21 [agent] INFO     Analyzing batch of 20 lines...
+2026-04-19 17:26:21 [agent] INFO     [MOCK] Returning mock finding: anomaly_detected=True type=cascading_timeout
+2026-04-19 17:26:21 [agent] WARNING  Anomaly detected — type=cascading_timeout severity=high service=payment-service
+2026-04-19 17:26:21 [agent] WARNING  Root cause: [MOCK] Multiple consecutive DB timeouts...
+2026-04-19 17:26:21 [agent] INFO     Published to SNS — MessageId: b6205f77-251c-4554-b88d-e26e7a682577
+2026-04-19 17:26:21 [agent] INFO     Wrote finding directly to SQS watcher queue
+
+2026-04-19 17:26:36 [agent] INFO     Buffered 8 new log lines (total buffered: 8)
+2026-04-19 17:26:51 [agent] INFO     No anomaly detected in batch.
+```
+
+Key things to verify:
+- `Buffered N new log lines` — agent is reading from CloudWatch
+- `Analyzing batch of 20 lines` — batch threshold reached, calling Claude
+- `Anomaly detected` — Claude (or mock) returned a finding
+- `Published to SNS — MessageId: ...` — finding sent to SNS
+- `Wrote finding directly to SQS watcher queue` — watcher will pick this up
+
+---
+
+#### Terminal 3 — Watcher (live findings display)
+
+```bash
+docker compose logs -f watcher
+```
+
+**What you should see** — color-coded anomaly cards printed as they arrive:
+
+```
+────────────────────────────────────────────────────────────
+  ANOMALY DETECTED
+────────────────────────────────────────────────────────────
+  Type:     cascading_timeout
+  Severity: HIGH                          ← red
+  Service:  payment-service
+
+  Root Cause:
+    [MOCK] Multiple consecutive database connection timeouts
+    detected (latency 4800-5500ms). The pattern suggests the
+    upstream DB connection pool is exhausted.
+
+  Action:
+    Check DB connection pool limits. Scale pool size or shed
+    load until DB recovers.
+────────────────────────────────────────────────────────────
+
+
+────────────────────────────────────────────────────────────
+  ANOMALY DETECTED
+────────────────────────────────────────────────────────────
+  Type:     auth_failure_storm
+  Severity: HIGH                          ← red
+  Service:  auth-service
+
+  Root Cause:
+    [MOCK] Burst of 401 authentication failures across
+    multiple request IDs within a 30-second window.
+
+  Action:
+    Rotate and re-deploy credentials. Check key expiry
+    in secrets manager.
+────────────────────────────────────────────────────────────
+```
+
+**Severity color key:**
+
+| Severity | Color | Meaning |
+|---|---|---|
+| `low` | Blue | Isolated, self-resolving |
+| `medium` | Yellow | Degraded but functional |
+| `high` | Red | Significant user impact |
+| `critical` | Magenta | Service down |
+
+---
+
+#### Terminal 4 — LocalStack (AWS mock health)
+
+```bash
+docker compose logs -f localstack
+```
+
+**What you should see** — AWS API calls being served locally:
+
+```
+LocalStack version: 3.4.0
+Ready.
+==> Creating CloudWatch log group: /microservice/payment-service
+==> Creating CloudWatch log stream: application
+==> Creating SNS topic: anomaly-findings
+    SNS Topic ARN: arn:aws:sns:us-east-1:000000000000:anomaly-findings
+==> Creating SQS queue: anomaly-findings-watcher
+    SQS Queue URL: http://...
+==> LocalStack init complete.
+
+AWS logs.CreateLogGroup   => 200
+AWS logs.CreateLogStream  => 200
+AWS logs.PutLogEvents     => 200    ← emitter writing logs
+AWS logs.GetLogEvents     => 200    ← agent reading logs
+AWS sns.Publish           => 200    ← agent publishing findings
+AWS sqs.SendMessage       => 200    ← direct SQS write
+AWS sqs.ReceiveMessage    => 200    ← watcher polling
+```
+
+---
+
+### Step 3 — Spot-Check via AWS CLI
+
+LocalStack exposes a real AWS CLI-compatible API on `localhost:4566`. Use it to inspect state without restarting anything.
+
+```bash
+# See recent logs written by the emitter
+aws --endpoint-url=http://localhost:4566 --region us-east-1 \
+  logs get-log-events \
+  --log-group-name /microservice/payment-service \
+  --log-stream-name application \
+  --limit 5
+
+# Confirm SNS topic exists
+aws --endpoint-url=http://localhost:4566 --region us-east-1 \
+  sns list-topics
+
+# Confirm SQS queue exists and check message counts
+aws --endpoint-url=http://localhost:4566 --region us-east-1 \
+  sqs get-queue-attributes \
+  --queue-url http://localhost:4566/000000000000/anomaly-findings-watcher \
+  --attribute-names ApproximateNumberOfMessages
+
+# Manually publish a test finding to SNS and watch it appear in watcher
+aws --endpoint-url=http://localhost:4566 --region us-east-1 \
+  sns publish \
+  --topic-arn arn:aws:sns:us-east-1:000000000000:anomaly-findings \
+  --message '{"anomaly_detected":true,"severity":"critical","anomaly_type":"error_rate_spike","affected_service":"manual-test","root_cause_summary":"Manual test publish.","recommended_action":"No action needed."}'
+```
+
+---
+
+### Step 4 — Full Pipeline Flow Diagram
+
+```
+Every 2s:
+  emitter ──► CloudWatch Logs (PutLogEvents ✓)
+
+Every 15s:
+  agent   ──► CloudWatch Logs (GetLogEvents ✓)
+          ──► [batch 20 logs]
+          ──► Claude API / Mock (analyze ✓)
+          ──► SNS Publish (MessageId returned ✓)
+          ──► SQS SendMessage (direct write ✓)
+
+Continuously:
+  watcher ──► SQS ReceiveMessage (long-poll 10s ✓)
+          ──► prints color-coded finding to stdout ✓
+```
+
+**Every step has a visible log line confirming it happened.** If any step is silent, check that container's logs for errors.
+
+---
+
+### Quick Health Check (one command)
+
+```bash
+docker compose ps
+```
+
+All 4 containers must show `Up` or `Up (healthy)`:
+
+```
+NAME              STATUS
+localstack-1      Up (healthy)    ← LocalStack AWS mock ready
+emitter-1         Up              ← writing logs every 2s
+agent-1           Up              ← polling + analyzing every 15s
+watcher-1         Up              ← printing findings in real time
+```
+
+If any container shows `Exited`, check its logs:
+```bash
+docker compose logs <service-name>
+```
+
+---
+
 ## Local Development (without Docker)
 
 ```bash
