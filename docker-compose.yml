@@ -45,6 +45,8 @@ services:
       - LOG_STREAM=${LOG_STREAM:-application}
       - POLL_INTERVAL_SEC=${POLL_INTERVAL_SEC:-15}
       - LOG_BATCH_SIZE=${LOG_BATCH_SIZE:-20}
+      - CLAUDE_MOCK=${CLAUDE_MOCK:-false}
+      - SQS_QUEUE_URL=http://localstack:4566/000000000000/anomaly-findings-watcher
     depends_on:
       localstack:
         condition: service_healthy
@@ -58,6 +60,7 @@ services:
       - AWS_ACCESS_KEY_ID=test
       - AWS_SECRET_ACCESS_KEY=test
       - LOCALSTACK_ENDPOINT=http://localstack:4566
+      - SQS_QUEUE_URL=http://localstack:4566/000000000000/anomaly-findings-watcher
     depends_on:
       localstack:
         condition: service_healthy

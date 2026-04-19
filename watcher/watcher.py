@@ -37,9 +37,10 @@ def resolve_queue_url(client) -> str:
     url = os.environ.get("SQS_QUEUE_URL", "")
     if url:
         return url
-    region = os.environ.get("AWS_DEFAULT_REGION", "us-east-1")
+    # Derive URL from the configured endpoint so it works both in Docker and locally
+    endpoint = os.environ.get("LOCALSTACK_ENDPOINT", "http://localhost:4566").rstrip("/")
     account = "000000000000"
-    return f"http://localhost:4566/{account}/anomaly-findings-watcher"
+    return f"{endpoint}/{account}/anomaly-findings-watcher"
 
 
 def print_finding(finding: dict):

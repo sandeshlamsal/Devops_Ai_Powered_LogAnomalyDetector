@@ -58,10 +58,11 @@ def main():
     retry_backoff = claude_cfg.get("retry_backoff_sec", [2, 4, 8])
 
     topic_arn = resolve_topic_arn()
+    sqs_queue_url = os.environ.get("SQS_QUEUE_URL", "")
 
     reader = CloudWatchReader(log_group, log_stream)
     claude = ClaudeClient(model=model, max_tokens=max_tokens)
-    publisher = SNSPublisher(topic_arn)
+    publisher = SNSPublisher(topic_arn, sqs_queue_url=sqs_queue_url)
 
     running = True
     signal.signal(signal.SIGTERM, lambda *_: globals().update(running=False))

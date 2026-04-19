@@ -35,6 +35,24 @@ QUEUE_ARN=$(aws --endpoint-url=$ENDPOINT --region=$REGION sqs get-queue-attribut
     --query 'Attributes.QueueArn' --output text)
 echo "    SQS Queue ARN: $QUEUE_ARN"
 
+echo "==> Granting SNS permission to send to SQS queue"
+POLICY=$(cat <<POLICY
+{
+  "Version": "2012-10-17",
+  "Statement": [{
+    "Effect": "Allow",
+    "Principal": {"Service": "sns.amazonaws.com"},
+    "Action": "sqs:SendMessage",
+    "Resource": "$QUEUE_ARN",
+    "Condition": {"ArnEquals": {"aws:SourceArn": "$TOPIC_ARN"}}
+  }]
+}
+POLICY
+)
+aws --endpoint-url=$ENDPOINT --region=$REGION sqs set-queue-attributes \
+    --queue-url "$QUEUE_URL" \
+    --attributes "{\"Policy\": $(echo $POLICY | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')}"
+
 echo "==> Subscribing SQS queue to SNS topic"
 aws --endpoint-url=$ENDPOINT --region=$REGION sns subscribe \
     --topic-arn "$TOPIC_ARN" \
