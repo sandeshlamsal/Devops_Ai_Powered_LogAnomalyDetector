@@ -1,15 +1,12 @@
 services:
   localstack:
-    image: localstack/localstack:3.4
+    build: ./localstack
     ports:
       - "4566:4566"
     environment:
       - SERVICES=logs,sns,sqs
       - DEBUG=0
       - DEFAULT_REGION=${AWS_DEFAULT_REGION:-us-east-1}
-    volumes:
-      - "./localstack/init-aws.sh:/etc/localstack/init/ready.d/init-aws.sh"
-      - "/var/run/docker.sock:/var/run/docker.sock"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:4566/_localstack/health"]
       interval: 5s
@@ -17,10 +14,10 @@ services:
       retries: 10
 
   emitter:
-    build: ./emitter
+    build:
+      context: .
+      dockerfile: emitter/Dockerfile
     env_file: .env
-    volumes:
-      - "./config.yaml:/config.yaml:ro"
     environment:
       - AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION:-us-east-1}
       - AWS_ACCESS_KEY_ID=test
@@ -35,10 +32,10 @@ services:
     restart: on-failure
 
   agent:
-    build: ./agent
+    build:
+      context: .
+      dockerfile: agent/Dockerfile
     env_file: .env
-    volumes:
-      - "./config.yaml:/config.yaml:ro"
     environment:
       - AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION:-us-east-1}
       - AWS_ACCESS_KEY_ID=test
