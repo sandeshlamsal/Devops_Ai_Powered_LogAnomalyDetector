@@ -1,0 +1,3 @@
+boto3==1.34.69
+anthropic==0.40.0
+pyyaml==6.0.1

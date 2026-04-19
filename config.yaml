@@ -1,0 +1,25 @@
+emitter:
+  interval_sec: 2
+  # probability weights for log level selection
+  level_weights:
+    info: 0.70
+    warning: 0.20
+    error: 0.10
+  # inject a burst anomaly scenario every N seconds (0 = disabled)
+  anomaly_inject_interval_sec: 60
+  # how many anomaly logs to emit in a burst
+  anomaly_burst_size: 8
+
+agent:
+  poll_interval_sec: 15
+  batch_size: 20
+  # how many log batches to hold in memory before flushing (not yet used)
+  max_backlog: 5
+  # minimum anomaly severity to publish to SNS (low|medium|high|critical)
+  min_publish_severity: medium
+
+claude:
+  model: claude-sonnet-4-6
+  max_tokens: 512
+  # seconds before retrying a failed Claude API call
+  retry_backoff_sec: [2, 4, 8]
